@@ -4,6 +4,8 @@ const { BLOG_SYSTEM_PROMPT, buildBlogUserPrompt } = require('../llm/prompts');
 const logger = require('../utils/logger');
 
 async function runGenerateJob() {
+  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
   const logId = db.prepare(
     `INSERT INTO job_logs (job_name, status) VALUES ('generate_blog', 'running')`
   ).run().lastInsertRowid;
@@ -18,56 +20,67 @@ async function runGenerateJob() {
 
     logger.info(`Generating blogs for ${enrichedNews.length} enriched news items`);
     let generatedCount = 0;
+    let failedCount = 0;
 
     for (const news of enrichedNews) {
-      const sources = db.prepare(
-        `SELECT source_title, content FROM buffer_articles 
-         WHERE raw_news_id = ? AND content IS NOT NULL LIMIT 4`
-      ).all(news.id);
-
-      if (sources.length === 0) {
-        logger.warn(`No sources found for news item: ${news.title}`);
-        continue;
-      }
-
-      const userPrompt = buildBlogUserPrompt(news.title, sources);
-      const rawResponse = await generateWithGroq(BLOG_SYSTEM_PROMPT, userPrompt);
-
-      // Parse JSON response
-      let blog;
       try {
-        const cleaned = rawResponse.replace(/```json|```/g, '').trim();
-        blog = JSON.parse(cleaned);
+        const sources = db.prepare(
+          `SELECT source_title, content FROM buffer_articles 
+           WHERE raw_news_id = ? AND content IS NOT NULL LIMIT 4`
+        ).all(news.id);
+
+        if (sources.length === 0) {
+          logger.warn(`No sources found for news item: ${news.title}`);
+          failedCount++;
+          continue;
+        }
+
+        const userPrompt = buildBlogUserPrompt(news.title, sources);
+        const rawResponse = await generateWithGroq(BLOG_SYSTEM_PROMPT, userPrompt);
+
+        // Parse JSON response
+        let blog;
+        try {
+          const cleaned = rawResponse.replace(/```json|```/g, '').trim();
+          blog = JSON.parse(cleaned);
+        } catch (err) {
+          logger.error(`Failed to parse LLM JSON response for: ${news.title}`, err.message);
+          failedCount++;
+          continue;
+        }
+
+        // Check settings for auto_publish
+        const autoPublishRow = db.prepare(`SELECT value FROM settings WHERE key='auto_publish'`).get();
+        const isPublished = autoPublishRow?.value === 'true' ? 1 : 0;
+
+        db.prepare(`
+          INSERT INTO published_blogs 
+            (raw_news_id, title, slug, meta_description, meta_keywords, og_title, og_description,
+             category, tags, content, summary, reading_time_min, is_published, published_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          news.id, blog.title, blog.slug, blog.meta_description, blog.meta_keywords,
+          blog.og_title, blog.og_description, blog.category,
+          JSON.stringify(blog.tags), blog.content, blog.summary,
+          blog.reading_time_min, isPublished,
+          isPublished ? new Date().toISOString() : null
+        );
+
+        // Mark buffer as processed
+        db.prepare(`UPDATE buffer_articles SET status='processed' WHERE raw_news_id=?`).run(news.id);
+        generatedCount++;
+        logger.info(`Blog generated and saved: ${blog.title}`);
+        
+        // Add a 3 second delay to avoid slamming the API too fast
+        await delay(3000);
       } catch (err) {
-        logger.error(`Failed to parse LLM JSON response for: ${news.title}`, err.message);
-        continue;
+        logger.error(`Error generating blog for ${news.title}:`, err.message);
+        failedCount++;
       }
-
-      // Check settings for auto_publish
-      const autoPublishRow = db.prepare(`SELECT value FROM settings WHERE key='auto_publish'`).get();
-      const isPublished = autoPublishRow?.value === 'true' ? 1 : 0;
-
-      db.prepare(`
-        INSERT INTO published_blogs 
-          (raw_news_id, title, slug, meta_description, meta_keywords, og_title, og_description,
-           category, tags, content, summary, reading_time_min, is_published, published_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        news.id, blog.title, blog.slug, blog.meta_description, blog.meta_keywords,
-        blog.og_title, blog.og_description, blog.category,
-        JSON.stringify(blog.tags), blog.content, blog.summary,
-        blog.reading_time_min, isPublished,
-        isPublished ? new Date().toISOString() : null
-      );
-
-      // Mark buffer as processed
-      db.prepare(`UPDATE buffer_articles SET status='processed' WHERE raw_news_id=?`).run(news.id);
-      generatedCount++;
-      logger.info(`Blog generated and saved: ${blog.title}`);
     }
 
     db.prepare(`UPDATE job_logs SET status='success', ended_at=CURRENT_TIMESTAMP, message=? WHERE id=?`)
-      .run(`Generated ${generatedCount} blog posts`, logId);
+      .run(`Generated ${generatedCount} blogs. Failed ${failedCount} blogs.`, logId);
   } catch (err) {
     logger.error('Generate job failed', err.message);
     db.prepare(`UPDATE job_logs SET status='failed', ended_at=CURRENT_TIMESTAMP, message=? WHERE id=?`)
