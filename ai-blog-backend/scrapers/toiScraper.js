@@ -3,13 +3,13 @@ const logger = require('../utils/logger');
 
 /**
  * Scrapes the Times of India homepage.
- * Targets the main news section and returns the FIRST news item.
- * Returns: { title, url }
+ * Targets the main news section and returns up to the specified limit of news items.
+ * Returns: Array of { title, url }
  */
-async function scrapeFirstTOINews() {
+async function scrapeTopTOINews(limit = 5) {
   let browser;
   try {
-    logger.info('Starting TOI Scraper...');
+    logger.info(`Starting TOI Scraper for up to ${limit} items...`);
     browser = await puppeteer.launch({ 
       headless: 'new', 
       args: ['--no-sandbox', '--disable-setuid-sandbox'] 
@@ -25,39 +25,49 @@ async function scrapeFirstTOINews() {
     });
 
     // Wait for the main news container
-    // Based on the plan's selector and TOI's common structure
     await page.waitForSelector('.BxDma a, .col_l_6 a', { timeout: 15000 });
 
-    const newsItem = await page.evaluate(() => {
-      // Try multiple potential selectors for the lead story
-      const selectors = ['.BxDma a.VeCXM', '.col_l_6 a', '.top-newslist a', '.news-card a'];
+    const newsItems = await page.evaluate((maxItems) => {
+      const results = [];
+      const seenUrls = new Set();
+      const selectors = ['.BxDma a', '.col_l_6 a', '.top-newslist a', '.news-card a'];
       
       for (const selector of selectors) {
-        const link = document.querySelector(selector);
-        if (link && link.innerText.trim().length > 10) {
-          const titleEl = link.querySelector('.CRKrj') || link;
-          return {
-            title: titleEl.innerText.trim(),
-            url: link.href
-          };
+        if (results.length >= maxItems) break;
+        
+        const links = Array.from(document.querySelectorAll(selector));
+        for (const link of links) {
+          if (results.length >= maxItems) break;
+          
+          if (link && link.innerText.trim().length > 10) {
+            const url = link.href;
+            if (!seenUrls.has(url)) {
+              seenUrls.add(url);
+              const titleEl = link.querySelector('.CRKrj') || link;
+              results.push({
+                title: titleEl.innerText.trim(),
+                url: url
+              });
+            }
+          }
         }
       }
-      return null;
-    });
+      return results;
+    }, limit);
 
-    if (!newsItem) {
-      throw new Error('Could not find any news item on TOI homepage');
+    if (!newsItems || newsItems.length === 0) {
+      throw new Error('Could not find any news items on TOI homepage');
     }
 
-    logger.info(`Successfully scraped TOI: ${newsItem.title}`);
-    return newsItem;
+    logger.info(`Successfully scraped ${newsItems.length} news items from TOI`);
+    return newsItems;
 
   } catch (err) {
     logger.error('TOI Scrape failed', err.message);
-    return null;
+    return [];
   } finally {
     if (browser) await browser.close();
   }
 }
 
-module.exports = { scrapeFirstTOINews };
+module.exports = { scrapeTopTOINews };
