@@ -12,7 +12,7 @@ export const authOptions = {
       },
       async authorize(credentials) {
         try {
-          const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+          const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:4000';
           const res = await axios.post(`${backendUrl}/api/auth/login`, {
             email: credentials.email,
             password: credentials.password,
@@ -26,6 +26,7 @@ export const authOptions = {
           }
           return null;
         } catch (e) {
+          console.error('NextAuth Authorize Error:', e.response?.data || e.message);
           return null;
         }
       }
