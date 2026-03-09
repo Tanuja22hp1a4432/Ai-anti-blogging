@@ -10,6 +10,60 @@ An intelligent platform for automating blog content generation, curation, and pu
 ## 🏗️ Project Architecture & Workflow
 The system follows a classic **Client-Server-Database** architecture with an added **AI/Job** layer for asynchronous processing.
 
+### **System Architecture Diagram:**
+
+```mermaid
+graph TD
+    subgraph Frontend ["Frontend (Next.js)"]
+        UI["User Interface (React)"]
+        NA["NextAuth.js (Session)"]
+        API_C["API Client (Axios)"]
+    end
+
+    subgraph Backend ["Backend (Node.js/Express)"]
+        AUTH["Auth Middleware (JWT)"]
+        CH["Controller Handlers"]
+        JOB["Job Scheduler (cron)"]
+        SCRAPE["Scrapers (Puppeteer/Cheerio)"]
+        LLM["AI Integration (Groq Client)"]
+    end
+
+    subgraph Database ["Database (SQLite)"]
+        DB["blog.db"]
+        TABLES["admin_users / raw_news / buffer_articles / published_blogs"]
+    end
+
+    subgraph External ["External Services"]
+        NEWS["News Sources (TOI, etc.)"]
+        GROQ["Groq LLM (Llama 3)"]
+        G_SEARCH["Google Search API"]
+    end
+
+    %% User Flow
+    UI --> NA
+    UI --> API_C
+    API_C --> AUTH
+    AUTH --> CH
+
+    %% Scraping & Automation Flow
+    CH --> JOB
+    JOB --> SCRAPE
+    SCRAPE --> NEWS
+    SCRAPE --> DB
+
+    %% Enrichment & AI Flow
+    CH --> LLM
+    LLM --> G_SEARCH
+    LLM --> GROQ
+    LLM --> DB
+
+    %% Data Retrieval
+    DB --> TABLES
+    TABLES --> CH
+    CH --> API_C
+    API_C --> UI
+```
+
 ### **Step-by-Step Workflow:**
 1.  **User Access:** User visits the Next.js frontend and authenticates via NextAuth.
 2.  **Request Generation:** User provides a topic or URL for a blog post.
